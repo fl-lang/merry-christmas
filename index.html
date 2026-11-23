@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Chen Le Merry Christmas!</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: #02040a; overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 46%, rgba(0,0,0,0) 40%, rgba(0,0,0,.42) 100%);
+  }
+  .overlay {
+    position: fixed; left: 0; right: 0;
+    bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+    text-align: center; pointer-events: none;
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    opacity: 0;
+    animation: fadeUp 1.5s cubic-bezier(.22,.61,.36,1) 10.2s forwards;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .kicker {
+    margin: 0 0 2px; font-size: 11px; letter-spacing: .42em; text-indent: .42em;
+    color: rgba(232, 240, 255, .38);
+  }
+  h1 {
+    margin: 0; font-weight: 600; line-height: 1.12;
+    font-size: clamp(22px, 5.6vw, 56px);
+    font-family: Georgia, "Times New Roman", "Songti SC", serif;
+    letter-spacing: 0;
+    background: linear-gradient(96deg, #ffe2a1 0%, #fffdf6 26%, #a7e8ff 55%, #ffc0d2 80%, #ffe2a1 100%);
+    background-size: 240% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; -webkit-text-fill-color: transparent;
+    animation: shimmer 9s ease-in-out infinite;
+    filter: drop-shadow(0 0 22px rgba(255, 206, 128, .28));
+  }
+  @keyframes shimmer {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+  .sub {
+    margin: 8px 0 0; font-size: 12.5px; letter-spacing: .08em;
+    color: rgba(226, 236, 255, .5);
+    transition: opacity .8s ease;
+  }
+  .sub.dim { opacity: .22; }
+
+  /* 音乐开关 */
+  #mBtn {
+    position: fixed; top: calc(14px + env(safe-area-inset-top, 0px)); right: 14px;
+    width: 38px; height: 38px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; line-height: 1;
+    color: rgba(255, 226, 178, .74);
+    background: rgba(12, 26, 48, .5);
+    border: 1px solid rgba(255, 214, 150, .22);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.02), 0 6px 18px rgba(0,0,0,.35);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    cursor: pointer; z-index: 5;
+    transition: color .3s ease, border-color .3s ease, transform .2s ease;
+    font-family: Georgia, "Songti SC", serif;
+  }
+  #mBtn.on {
+    color: #ffe6b0; border-color: rgba(255, 214, 150, .55);
+    box-shadow: 0 0 16px rgba(255, 196, 120, .35), 0 6px 18px rgba(0,0,0,.35);
+  }
+  #mBtn:active { transform: scale(.94); }
+  #mBtn .bar { position: absolute; width: 22px; height: 1px; background: rgba(255,225,180,.75); transform: rotate(-38deg); opacity: 0; transition: opacity .25s; }
+  #mBtn.off .bar { opacity: 1; }
+
+  @media (max-height: 520px) {
+    .overlay { bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+    .sub { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div class="vignette"></div>
+<div class="overlay">
+  <p class="kicker">2026</p>
+  <h1>Chen Le Merry Christmas!</h1>
+  <p class="sub">点一下：星屑 + 音乐 · 按 R 重播</p>
+</div>
+<button id="mBtn" class="off" aria-label="背景音乐开关">♪<span class="bar"></span></button>
+
+<script>
+(function () {
+  "use strict";
+
+  var TAU = Math.PI * 2;
+  var canvas = document.getElementById("scene");
+  var ctx = canvas.getContext("2d");
+  var subEl = document.querySelector(".sub");
+
+  var W = 0, H = 0, DPR = 1;
+  var bgCanvas = null;
+  var tree = { points: [], top: 0, bottom: 0, cx: 0, maxR: 0 };
+  var snow = [];
+  var sparks = [];
+  var rot = 0, boost = 0, lastT = 0;
+  var perfLo = false, glowK = 1, dustK = 0;
+  var INTRO = 6500;          // 总时长：星尘漂移 + 一圈接一圈由下往上生长（毫秒）
+  var GATHER = 0.12;         // 前 12% 为满天星尘漂移
+  var RING_COUNT = 9;        // 从下到上的枝带层数
+  var RING_SPAN = 0.16;      // 每一圈的落位时长：比圈间隔长，前后两圈交叠，飞行中始终有粒子在流动
+  var introStart = 0, introDone = false;
+
+  /* 开场烟花：先放三秒多，最后一发在树尖炸开，火星落下来就是树的星尘 */
+  var FW_MS = 3400;
+  var FW_PLAN = [160, 800, 1450, 2050, 2600];
+  var FW_COLORS = ["#ffd067", "#ff465c", "#6fd8ff", "#ff86b8", "#ffe9b4", "#ffa14a"];
+  var fwStart = 0, fwPlanIdx = 0, fwRockets = [], fwParts = [], fwFlash = [];
+  var dustSeedT = 0, dustSeedX = 0, dustSeedY = 0;
+  var embers = [];
+
+  function clamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+  function easeInOut(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+
+  var PALETTE = [
+    ["#ff4d5f", 0.18],   // 正红
+    ["#ffc46b", 0.34],   // 暖金
+    ["#ffe9c9", 0.26],   // 暖白，压着用，避免白团
+    ["#ff9d6b", 0.15],   // 琥珀
+    ["#79d8ff", 0.07]    // 冷青，只作边缘点缀
+  ];
+
+  function rgba(hex, a) {
+    var h = hex.replace("#", "");
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var n = parseInt(h, 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+  }
+
+  function pickColor() {
+    var r = Math.random(), acc = 0, i;
+    for (i = 0; i < PALETTE.length; i++) {
+      acc += PALETTE[i][1];
+      if (r <= acc) return PALETTE[i][0];
+    }
+    return PALETTE[0][0];
+  }
+
+    var spriteCache = {};
+  function sprite(color) {
+    if (spriteCache[color]) return spriteCache[color];
+    var S = 64;
+    var cv = document.createElement("canvas");
+    cv.width = S; cv.height = S;
+    var c = cv.getContext("2d");
+    var g = c.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    g.addColorStop(0, rgba(color, 1));
+    g.addColorStop(0.14, rgba(color, 0.92));
+    g.addColorStop(0.34, rgba(color, 0.38));
+    g.addColorStop(0.68, rgba(color, 0.08));
+    g.addColorStop(1, rgba(color, 0));
+    c.fillStyle = g;
+    c.fillRect(0, 0, S, S);
+    spriteCache[color] = cv;
+    return cv;
+  }
+
+  function drawGlow(color, x, y, size, alpha) {
+    if (alpha <= 0.004) return;
+    ctx.globalAlpha = alpha > 1 ? 1 : alpha;
+    ctx.drawImage(sprite(color), x - size / 2, y - size / 2, size, size);
+  }
+
+  /* ---------- 氛围：雾气 / 接地 / 树体 / 灯带 ---------- */
+  function drawFog(intro) {
+    var fade = clamp01((intro - GATHER) / 0.4);
+    if (fade <= 0.01) return;
+
+    var cx = tree.cx;
+    var cy = tree.top + (tree.bottom - tree.top) * 0.45;
+
+    var warm = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(tree.maxR * 2.7, W * 0.42));
+    warm.addColorStop(0, "rgba(255,193,126," + (0.11 * fade) + ")");
+    warm.addColorStop(0.45, "rgba(255,162,96," + (0.045 * fade) + ")");
+    warm.addColorStop(1, "rgba(255,150,90,0)");
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = warm;
+    ctx.fillRect(0, 0, W, H);
+
+    var cool = ctx.createRadialGradient(cx, tree.top - H * 0.06, 0, cx, tree.top - H * 0.06, Math.max(W, H) * 0.6);
+    cool.addColorStop(0, "rgba(86,132,255," + (0.06 * fade) + ")");
+    cool.addColorStop(1, "rgba(86,132,255,0)");
+    ctx.fillStyle = cool;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawGround(intro) {
+    var a = clamp01((intro - GATHER) / 0.3);
+    if (a <= 0.01) return;
+
+    var cx = tree.cx;
+    var by = tree.bottom + 4;
+    var r = tree.maxR * 1.45;
+
+    ctx.globalCompositeOperation = "source-over";
+    var sg = ctx.createRadialGradient(cx, by, 0, cx, by, r);
+    sg.addColorStop(0, "rgba(0,0,0," + (0.20 * a) + ")");
+    sg.addColorStop(0.58, "rgba(0,0,0," + (0.09 * a) + ")");
+    sg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.save();
+    ctx.translate(cx, by);
+    ctx.scale(1, 0.24);
+    ctx.translate(-cx, -by);
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.arc(cx, by, r, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.globalCompositeOperation = "lighter";
+    var rg = ctx.createRadialGradient(cx, by, 0, cx, by, r * 1.5);
+    rg.addColorStop(0, "rgba(158,198,255," + (0.10 * a) + ")");
+    rg.addColorStop(0.4, "rgba(112,148,235," + (0.035 * a) + ")");
+    rg.addColorStop(1, "rgba(112,148,235,0)");
+    ctx.save();
+    ctx.translate(cx, by);
+    ctx.scale(1, 0.26);
+    ctx.translate(-cx, -by);
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.arc(cx, by, r * 1.5, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function drawBody(intro) {
+    var u = clamp01((intro - GATHER) / (1 - GATHER));
+    var grow = clamp01((u - 0.02) / 0.96);
+    if (grow <= 0.02) return;
+
+    var cx = tree.cx;
+    var th = tree.bottom - tree.top;
+    var steps = 44;
+    var pass, padX, aBase, s, t, rr, y, botT;
+    var alphas = [0.105, 0.068, 0.047, 0.031, 0.019];
+    var padStep = Math.max(6, tree.maxR * 0.10);
+
+    // 树体：从底到顶一条连续的软边锥形剪影（叠五遍加宽轮廓，边缘羽化得更宽，
+    // 让轮廓和背景化在一起，不再沿每层边缘露出一圈青绿边）
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    botT = grow;
+    if (botT <= 0.03) return;
+    for (pass = 0; pass < alphas.length; pass++) {
+      padX = pass * padStep;
+      aBase = alphas[pass];
+      ctx.beginPath();
+      for (s = 0; s <= steps; s++) {
+        t = (botT) * (s / steps);
+        rr = tierRadiusAt(t) * 0.92 + padX;
+        y = tree.top + t * th - treeLift(t);
+        if (s === 0) ctx.moveTo(cx + rr, y); else ctx.lineTo(cx + rr, y);
+      }
+      for (s = steps; s >= 0; s--) {
+        t = (botT) * (s / steps);
+        rr = tierRadiusAt(t) * 0.92 + padX;
+        y = tree.top + t * th - treeLift(t);
+        ctx.lineTo(cx - rr, y);
+      }
+      ctx.closePath();
+      var lg = ctx.createLinearGradient(0, tree.top, 0, tree.bottom);
+      lg.addColorStop(0, "rgba(15,56,41," + (aBase * 0.8) + ")");
+      lg.addColorStop(0.5, "rgba(13,50,37," + aBase + ")");
+      lg.addColorStop(1, "rgba(10,42,32," + (aBase * 0.95) + ")");
+      ctx.fillStyle = lg;
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = "source-over";
+
+    drawNeedles(grow, cx, th);
+  }
+
+  /* ---------- 每层边缘的短针叶，把光滑椭圆打成有枝叶的轮廓 ---------- */
+  function drawNeedles(grow, cx, th) {
+    var tiers = tree.tiers, i, j, tr, R, n, ang, ca, sa, bx, by, len, tx, ty;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.lineCap = "round";
+    for (i = 0; i < tiers.length; i++) {
+      tr = tiers[i];
+      if (tr.t > grow) break;
+      R = tr.r;
+      if (R < 22) continue;
+      n = Math.max(9, Math.round(R * (perfLo ? 0.10 : 0.14)));
+      for (j = 0; j < n; j++) {
+        ang = (j / n) * TAU + (i % 2 ? 0.14 : 0.0);
+        ca = Math.cos(ang);
+        sa = Math.sin(ang);
+        bx = cx + R * 0.985 * ca;
+        by = tr.y + R * 0.157 * sa + th * 0.006;
+        len = th * (0.016 + ((j * 7 + i * 3) % 5) * 0.0075);
+        tx = bx + ca * len * 0.8;
+        ty = by + sa * len * 0.2 + len * 0.62;
+        ctx.lineWidth = 1.3;
+        ctx.strokeStyle = "rgba(24,68,52,0.30)";
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(bx + (tx - bx) * 0.6, by + (ty - by) * 0.6);
+        ctx.stroke();
+        ctx.lineWidth = 1.1;
+        ctx.strokeStyle = "rgba(18,54,42,0.16)";
+        ctx.beginPath();
+        ctx.moveTo(bx + (tx - bx) * 0.6, by + (ty - by) * 0.6);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawTinsel(intro, now) {
+    var u = clamp01((intro - GATHER) / (1 - GATHER));
+    var grow = clamp01((u - 0.02) / 0.96);
+    if (grow <= 0.05) return;
+
+    var cx = tree.cx;
+    var bottom = tree.bottom;
+    var th = bottom - tree.top;
+    var maxR = tree.maxR;
+    var strands = 3;
+    var segs = 46;
+    var tStart = 0.15;
+    if (grow <= tStart + 0.03) return;
+    var span = grow - tStart;
+    var s, i, t, ang, r, y, x3, z3, persp, sx, sy;
+
+    var wireA = 0.13 * clamp01((grow - 0.80) / 0.20);
+    ctx.globalCompositeOperation = "lighter";
+    for (s = 0; s < strands; s++) {
+      if (wireA > 0.004) {
+        ctx.beginPath();
+        for (i = 0; i <= segs; i++) {
+          t = tStart + (i / segs) * span;
+          ang = rot + s * (TAU / strands) + t * TAU * 2.3;
+          r = treeRadius(t) * 0.94;
+          y = tree.top + t * th - treeLift(t);
+          x3 = r * Math.cos(ang);
+          z3 = r * Math.sin(ang);
+          persp = 1 / (1 + z3 * 0.0015);
+          sx = cx + x3 * persp;
+          sy = bottom + (y - bottom) * persp;
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        }
+        ctx.strokeStyle = "rgba(255,214,150," + wireA + ")";
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
+      }
+
+      for (i = 0; i <= segs; i += 4) {
+        t = tStart + (i / segs) * span;
+        ang = rot + s * (TAU / strands) + t * TAU * 2.3;
+        r = treeRadius(t) * 0.94;
+        y = tree.top + t * th - treeLift(t);
+        x3 = r * Math.cos(ang);
+        z3 = r * Math.sin(ang);
+        persp = 1 / (1 + z3 * 0.0015);
+        sx = cx + x3 * persp;
+        sy = bottom + (y - bottom) * persp;
+        var wave = 0.5 + 0.5 * Math.sin(now * 0.0017 - t * TAU * 2.4 - s * 1.7);
+        drawGlow("#ffd9a6", sx, sy, (7 + 6 * wave * wave) * persp, 0.22 + 0.46 * Math.pow(wave, 5));
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- 悬在各层的暖金灯带 ---------- */
+  function drawGarlands(now, intro) {
+    if (!tree.tiers || !tree.tiers.length) return;
+
+    var u = clamp01((intro - GATHER) / (1 - GATHER));
+    var grow = clamp01((u - 0.02) / 0.96);
+    if (grow <= 0.02) return;
+
+    var cx = tree.cx, bottom = tree.bottom, th = bottom - tree.top;
+    var i, j, tier, R, y, count, ang, x3, z3, persp, sx, sy, pulse, a, dip, need, tb, fa;
+    var swags = 6;
+
+    ctx.globalCompositeOperation = "lighter";
+    for (i = 0; i < tree.tiers.length; i++) {
+      tier = tree.tiers[i];
+      // 灯带跟着该层的点灯节奏出现，别比灯先到
+      tb = i / (tree.tiers.length - 1);
+      need = 0.02 + tb * 0.62 + 0.26;
+      if (u < need) continue;
+      fa = clamp01((u - need) / 0.06);
+      if (fa <= 0.01) continue;
+
+      R = tier.r * 1.04;
+      if (R < 26) continue;                       // 顶端太挤，留白给星星
+      y = tier.y + th * 0.016;
+      count = Math.max(10, Math.round(R * (perfLo ? 0.34 : 0.44)));
+
+      // 一道很淡的连线，把灯珠串成灯带
+      ctx.globalAlpha = 0.045 * fa;
+      ctx.strokeStyle = "#ffd9a6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (j = 0; j <= count; j++) {
+        ang = (j / count) * TAU;
+        dip = (1 - Math.cos(ang * swags)) * 0.5 * th * 0.010;
+        x3 = R * Math.cos(ang);
+        z3 = R * Math.sin(ang);
+        persp = 1 / (1 + z3 * 0.0015);
+        sx = cx + x3 * persp;
+        sy = bottom + (y + dip - bottom) * persp;
+        if (j === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      for (j = 0; j < count; j++) {
+        ang = (j / count) * TAU;
+        dip = (1 - Math.cos(ang * swags)) * 0.5 * th * 0.010;
+        x3 = R * Math.cos(ang);
+        z3 = R * Math.sin(ang);
+        persp = 1 / (1 + z3 * 0.0015);
+        sx = cx + x3 * persp;
+        sy = bottom + (y + dip - bottom) * persp;
+        pulse = 0.5 + 0.5 * Math.sin(now * 0.0016 - ang * 3.0 - i * 0.8);
+        a = (0.24 + 0.52 * Math.pow(pulse, 4)) * (0.62 + 0.38 * persp) * fa;
+        drawGlow("#ffdca8", sx, sy, 7.5 * persp, a);
+      }
+    }
+
+    // 一条螺旋灯带，从底往上斜穿各层，把独立的圈连成一条
+    var sN = perfLo ? 90 : 120;
+    var sk, st, sAng, sR, sY, sPulse, sA, sLast = 0;
+
+    // 按该层点灯完成的时间逐段出现，别比树上的灯先冒出来；到树尖前就收住
+    for (sk = 0; sk <= sN; sk++) {
+      st = 0.96 - (sk / sN) * 0.78;
+      if (u < 0.02 + ((0.96 - st) / 0.86) * 0.62 + 0.26) break;
+      sLast = sk;
+    }
+    if (sLast > 6) {
+      for (sk = 0; sk <= sLast; sk++) {
+        st = 0.96 - (sk / sN) * 0.78;
+        sAng = sk * (2.1 * TAU / sN);
+        sR = tierRadiusAt(st) * 1.04;
+        sY = tree.top + st * th - treeLift(st) + th * 0.012;
+        x3 = sR * Math.cos(sAng);
+        z3 = sR * Math.sin(sAng);
+        persp = 1 / (1 + z3 * 0.0015);
+        sx = cx + x3 * persp;
+        sy = bottom + (sY - bottom) * persp;
+        sPulse = 0.5 + 0.5 * Math.sin(now * 0.0016 - sAng * 1.4 + 1.2);
+        sA = (0.16 + 0.36 * Math.pow(sPulse, 4)) * (0.6 + 0.4 * persp);
+        drawGlow("#ffdca8", sx, sy, 6 * persp, sA);
+      }
+    }
+
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- 泛光 ---------- */
+  var bloomCv = null, bloomCtx = null, bloomTmp = null, bloomTmpCtx = null, bloomW = 0, bloomH = 0;
+
+  function buildBloom() {
+    var bs = perfLo ? 0.22 : 0.3;
+    bloomW = Math.max(96, Math.round(W * bs));
+    bloomH = Math.max(96, Math.round(H * bs));
+    bloomCv = document.createElement("canvas");
+    bloomCv.width = bloomW;
+    bloomCv.height = bloomH;
+    bloomCtx = bloomCv.getContext("2d");
+    bloomTmp = document.createElement("canvas");
+    bloomTmp.width = bloomW;
+    bloomTmp.height = bloomH;
+    bloomTmpCtx = bloomTmp.getContext("2d");
+  }
+
+  function drawBloom() {
+    if (!bloomCtx) return;
+
+    bloomTmpCtx.setTransform(1, 0, 0, 1, 0, 0);
+    bloomTmpCtx.globalCompositeOperation = "source-over";
+    bloomTmpCtx.globalAlpha = 1;
+    bloomTmpCtx.clearRect(0, 0, bloomW, bloomH);
+    bloomTmpCtx.drawImage(canvas, 0, 0, bloomW, bloomH);
+
+    bloomCtx.setTransform(1, 0, 0, 1, 0, 0);
+    bloomCtx.globalCompositeOperation = "source-over";
+    bloomCtx.globalAlpha = 1;
+    bloomCtx.clearRect(0, 0, bloomW, bloomH);
+    bloomCtx.drawImage(bloomTmp, 0, 0);
+
+    // 自身相乘：压掉中间调，只让高光溢出来
+    bloomCtx.globalCompositeOperation = "multiply";
+    bloomCtx.drawImage(bloomTmp, 0, 0);
+    bloomCtx.globalCompositeOperation = "source-over";
+
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.27;
+    ctx.drawImage(bloomCv, 0, 0, W, H);
+    if (!perfLo) {
+      ctx.globalAlpha = 0.07;
+      ctx.drawImage(bloomCv, -W * 0.06, -H * 0.06, W * 1.12, H * 1.12);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  /* ---------- 背景 ---------- */
+  function buildBg() {
+    bgCanvas = document.createElement("canvas");
+    bgCanvas.width = Math.round(W * DPR);
+    bgCanvas.height = Math.round(H * DPR);
+    var c = bgCanvas.getContext("2d");
+    c.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    var g = c.createRadialGradient(W * 0.5, H * 0.44, 0, W * 0.5, H * 0.44, Math.max(W, H) * 0.82);
+    g.addColorStop(0, "#102244");
+    g.addColorStop(0.42, "#08152e");
+    g.addColorStop(0.78, "#040a18");
+    g.addColorStop(1, "#010207");
+    c.fillStyle = g;
+    c.fillRect(0, 0, W, H);
+
+    // 远景星点
+    var count = Math.round(Math.min(140, Math.max(50, W / 9)));
+    for (var i = 0; i < count; i++) {
+      var x = Math.random() * W;
+      var y = Math.random() * H * 0.86;
+      var r = Math.random() * 1.15 + 0.25;
+      var a = 0.18 + Math.random() * 0.5;
+      c.fillStyle = "rgba(214, 231, 255," + a + ")";
+      c.beginPath();
+      c.arc(x, y, r, 0, TAU);
+      c.fill();
+    }
+  }
+
+  /* 树半径剖面：底部向外扩、层间带扇形起伏，下沿因此有弧度而不像直边三角 */
+  function treeRadius(t) {
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    var flare = 1 + 0.10 * t * t * t;
+    var scallop = 1 + 0.11 * Math.sin(t * Math.PI * 6.4);
+    return tree.maxR * Math.pow(t, 0.95) * flare * scallop;
+  }
+
+  /* 底层枝梢上翘：让树的底缘是一条向上的弧，而不是一条平线 */
+  function treeLift(t) {
+    var k = (t - 0.72) / 0.28;
+    k = k < 0 ? 0 : (k > 1 ? 1 : k);
+    return k * k * (tree.bottom - tree.top) * 0.045;
+  }
+
+  /* 逐层半径：按枝带的阶梯半径插值，树体剪影跟着层走 */
+  function tierRadiusAt(t) {
+    var tiers = tree.tiers, n = tiers.length, k, t0, t1, f;
+    if (!n) return treeRadius(t);
+    if (t >= tiers[0].t) return tiers[0].r;
+    if (t <= tiers[n - 1].t) return tiers[n - 1].r;
+    for (k = 0; k < n - 1; k++) {
+      if (t <= tiers[k].t && t >= tiers[k + 1].t) break;
+    }
+    t0 = tiers[k].t;
+    t1 = tiers[k + 1].t;
+    f = (t0 - t) / (t0 - t1 || 1);
+    return tiers[k].r + (tiers[k + 1].r - tiers[k].r) * f;
+  }
+
+  /* ---------- 树 ---------- */
+  function buildTree() {
+    var th = Math.min(H * 0.60, W * 0.82);
+    var maxR = th * 0.34;
+    var bottom = H * (H > W ? 0.755 : 0.76);
+    var top = bottom - th;
+    var cx = W * 0.5;
+
+    tree.top = top;
+    tree.bottom = bottom;
+    tree.cx = cx;
+    tree.maxR = maxR;
+
+    // 灯沿 9 层“枝带”走：每层是一条带透视的水平环，不再往锥面上撒点
+    var TIERS = RING_COUNT;
+    var lightBase = perfLo ? 88 : 120;         // 最底层灯数，往上按半径递减
+    var pts = [];
+    var i, j, n, m, tb, t, R, y, ang, rr, yy, RBase;
+
+    RBase = treeRadius(0.96) * 0.90;
+    tree.tiers = [];
+    for (i = 0; i < TIERS; i++) {
+      tb = i / (TIERS - 1);                    // 0 = 最底，1 = 最顶
+      t = 0.96 - tb * 0.86 + (Math.random() - 0.5) * 0.02;
+      // 半径按层逐级收：每层比下层小一成多，底下几圈不再一样大
+      R = RBase * Math.pow(0.84, i) * (i === 0 ? 0.95 : 1) * (0.96 + Math.random() * 0.08);
+      // 最上面几层再收一次，树尖才不会顶着一顶帽子
+      if (i >= TIERS - 4) R *= 1 - 0.16 * (i - (TIERS - 5));
+      y = tree.top + t * th - treeLift(t);
+      var off = (Math.random() - 0.5) * W * 0.014;                        // 层心轻微偏移，别做同心蛋糕
+      n = Math.max(4, Math.round(lightBase * (R / RBase) * (i === 0 ? 0.68 : 1)));
+      m = Math.round(n * (R < 40 ? 0 : (R < 60 ? 0.3 : (i === 0 ? 0.35 : 0.55))));   // 枝带内部的零散灯，补出体积；顶端不放，免得糊成一块
+      tree.tiers.push({ t: t, r: R, y: y });
+
+      for (j = 0; j < n + m; j++) {
+        var rim = j < n;
+        if (rim) {
+          ang = (j / n) * TAU + i * 0.55 + (Math.random() - 0.5) * (TAU / n) * 0.55;
+          rr = R * (1 + 0.06 * Math.sin(ang * 2.2 + i * 1.7)) * (0.97 + Math.random() * 0.06);
+          yy = y + (Math.random() - 0.5) * th * 0.028 + Math.sin(ang) * R * 0.05;
+        } else {
+          ang = Math.random() * TAU;
+          rr = R * (0.38 + Math.random() * 0.58);
+          yy = y + (Math.random() - 0.5) * th * 0.030;
+        }
+
+        // 出发位置：满屏散落的星尘，先缓慢漂移
+        var spx = Math.random() * W;
+        var spy = Math.random() * H;
+        var dvx = (Math.random() - 0.5) * 0.42;
+        var dvy = (Math.random() - 0.5) * 0.34;
+
+        // 从下往上一层一层点灯，层内按极角绕一圈扫过去
+        var db = 0.02 + tb * 0.62 + (((ang % TAU) + TAU) % TAU) / TAU * 0.13 + (Math.random() - 0.5) * 0.008;
+
+        pts.push({
+          th: ang, r: rr, y: yy, kind: "light", off: off,
+          s: (Math.random() < 0.12 ? 15 : 7) + Math.random() * 7,
+          color: pickColor(),
+          ph: Math.random() * TAU, sp: 0.9 + Math.random() * 2.0,
+          b: 0.80 + Math.random() * 0.40, landT: 0,
+          sx0: spx, sy0: spy, ox: spx, oy: spy, dvx: dvx, dvy: dvy,
+          delay: db, arc: (Math.random() - 0.5) * 90, px: spx, py: spy
+        });
+      }
+    }
+    tree.points = pts;
+  }
+
+  function drawTree(now, k, intro) {
+    var pts = tree.points;
+    var bottom = tree.bottom;
+    var cx = tree.cx;
+    var i, p, ang, x3, z3, persp, depth, tx, ty, sx, sy, s, alpha, flick;
+    var prog, e, dx, dy, len, arcOff, mx, my, trailA;
+
+    // 叶雾先画，形成树体
+    for (i = 0; i < pts.length; i++) {
+      p = pts[i];
+      if (p.kind !== "leaf") continue;
+      ang = p.th + rot;
+      x3 = p.r * Math.cos(ang);
+      z3 = p.r * Math.sin(ang);
+      persp = 1 / (1 + z3 * 0.0015);
+      depth = (z3 / (tree.maxR || 1) + 1) * 0.5;
+      tx = cx + (p.off || 0) + x3 * persp;
+      ty = bottom + (p.y - bottom) * persp;
+
+      // 汇聚前的满天星尘：缓慢漂移
+      if (intro < GATHER) {
+        p.sx0 += p.dvx * k;
+        p.sy0 += p.dvy * k;
+        if (p.sx0 < -24) p.sx0 = W + 24; else if (p.sx0 > W + 24) p.sx0 = -24;
+        if (p.sy0 < -24) p.sy0 = H + 24; else if (p.sy0 > H + 24) p.sy0 = -24;
+      }
+
+      var u = clamp01((intro - GATHER) / (1 - GATHER));
+      prog = clamp01((u - p.delay) / RING_SPAN);
+      e = easeInOut(prog);
+      dx = tx - p.sx0;
+      dy = ty - p.sy0;
+      len = Math.sqrt(dx * dx + dy * dy) || 1;
+      arcOff = Math.sin(prog * Math.PI) * p.arc;
+      sx = p.sx0 + dx * e - (dy / len) * arcOff;
+      sy = p.sy0 + dy * e + (dx / len) * arcOff;
+
+      s = p.s * persp * (0.55 + 0.45 * e);
+      alpha = p.b * (0.34 + 0.66 * depth) * (0.45 + 0.55 * e);
+      if (intro < GATHER) { alpha *= dustK; s *= 0.55 + 0.45 * dustK; }
+      drawGlow(p.color, sx, sy, s, alpha);
+      p.px = sx;
+      p.py = sy;
+    }
+
+    // 彩灯
+    for (i = 0; i < pts.length; i++) {
+      p = pts[i];
+      if (p.kind !== "light") continue;
+      ang = p.th + rot;
+      x3 = p.r * Math.cos(ang);
+      z3 = p.r * Math.sin(ang);
+      persp = 1 / (1 + z3 * 0.0015);
+      depth = (z3 / (tree.maxR || 1) + 1) * 0.5;
+
+      tx = cx + (p.off || 0) + x3 * persp;
+      ty = bottom + (p.y - bottom) * persp;
+
+      // 汇聚前的满天星尘：缓慢漂移
+      if (intro < GATHER) {
+        p.sx0 += p.dvx * k;
+        p.sy0 += p.dvy * k;
+        if (p.sx0 < -24) p.sx0 = W + 24; else if (p.sx0 > W + 24) p.sx0 = -24;
+        if (p.sy0 < -24) p.sy0 = H + 24; else if (p.sy0 > H + 24) p.sy0 = -24;
+      }
+
+      var u = clamp01((intro - GATHER) / (1 - GATHER));
+      prog = clamp01((u - p.delay) / RING_SPAN);
+      e = easeInOut(prog);
+      dx = tx - p.sx0;
+      dy = ty - p.sy0;
+      len = Math.sqrt(dx * dx + dy * dy) || 1;
+      arcOff = Math.sin(prog * Math.PI) * p.arc;
+
+      sx = p.sx0 + dx * e - (dy / len) * arcOff;
+      sy = p.sy0 + dy * e + (dx / len) * arcOff;
+
+      p.ph += p.sp * 0.016 * k;
+      flick = 0.66 + 0.34 * Math.sin(p.ph);
+
+      // 落位瞬间记下时间，用于点亮余晖
+      if (e >= 1) {
+        if (!p.landT) p.landT = now;
+      } else if (p.landT) {
+        p.landT = 0;
+      }
+
+      var ringT = clamp01((p.y - tree.top) / (tree.bottom - tree.top));
+      var sizeT = 0.45 + 0.55 * ringT;                 // 外层枝灯珠大、内层小，形成层次
+      s = p.s * persp * sizeT * (0.55 + 0.45 * e) * (0.92 + flick * 0.16) * (1 + boost * 0.12);
+      alpha = p.b * (0.3 + 0.7 * depth) * flick * (0.45 + 0.55 * e) * (1 + boost * 0.85);
+      if (intro < GATHER) { alpha *= dustK; s *= 0.55 + 0.45 * dustK; }
+
+      // 汇聚过程中的拖尾
+      if (e < 1) {
+        mx = p.px + (sx - p.px) * 0.5;
+        my = p.py + (sy - p.py) * 0.5;
+        trailA = alpha * 0.38;
+        drawGlow(p.color, mx, my, s * 0.72, trailA);
+      }
+
+      var tf = clamp01((p.y - tree.top) / ((tree.bottom - tree.top) * 0.30));
+      alpha *= 0.45 + 0.55 * tf;
+      alpha *= glowK;
+
+      // 落位余晖：刚落地的灯先亮一档，再衰减回常态
+      var after = p.landT ? clamp01(1 - (now - p.landT) / 420) : 0;
+      if (after > 0.01) {
+        alpha *= 1 + 0.5 * after;
+        drawGlow(p.color, sx, sy, s * 2.0, alpha * 0.28 * after);
+      }
+
+      // 柔晕 + 紧实灯芯：读作灯珠，而不是散景球
+      drawGlow(p.color, sx, sy, s * 1.22, alpha * 0.46);
+      drawGlow(p.color, sx, sy, s * 0.46, alpha);
+
+      // 高光点
+      ctx.globalAlpha = Math.min(1, alpha * 0.8);
+      ctx.fillStyle = "#fff9ee";
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(0.75, s * 0.085), 0, TAU);
+      ctx.fill();
+
+      p.px = sx;
+      p.py = sy;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- 顶端星星 ---------- */
+  function drawStar(now, starA) {
+    var a = clamp01(starA);
+    if (a <= 0.01) return;
+
+    var x = tree.cx;
+    var y = tree.top - Math.min(6, H * 0.012);
+    var pulse = 0.62 + 0.38 * Math.sin(now * 0.0021);
+    var e = (1 + boost * 0.4) * (0.7 + 0.3 * a);
+
+    // 十字光芒
+    var long = (W < 520 ? 88 : 132) * (0.82 + pulse * 0.18) * e;
+    var short = long * 0.30;
+    drawGlow("#ffe9b8", x, y, long * 0.95, (0.26 * pulse + 0.06) * a);
+    ctx.save();
+    ctx.globalAlpha = a * 0.5;
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(sprite("#fff0c2"), x - short * 0.26, y - long / 2, short * 0.52, long);
+    ctx.drawImage(sprite("#fff0c2"), x - long / 2, y - short * 0.16, long, short * 0.32);
+    ctx.restore();
+
+    // 星核
+    drawGlow("#fff4de", x, y, (16 * pulse * e + 7) * a, 0.55 * a);
+  }
+
+  /* ---------- 雪 ---------- */
+  function buildSnow() {
+    snow = [];
+    var n = Math.round(Math.min(perfLo ? 150 : 230, Math.max(70, W / (perfLo ? 9 : 6.5))));
+    for (var i = 0; i < n; i++) {
+      // 三层景深：0 远（小慢暗） 1 中 2 近（大快亮，带摆动）
+      var layer = i < n * 0.50 ? 0 : (i < n * 0.89 ? 1 : 2);
+      snow.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        layer: layer,
+        r: layer === 0 ? 0.5 + Math.random() * 0.9
+          : (layer === 1 ? 0.9 + Math.random() * 1.4 : 1.4 + Math.random() * 1.7),
+        vy: layer === 0 ? 0.16 + Math.random() * 0.26
+          : (layer === 1 ? 0.38 + Math.random() * 0.5 : 0.72 + Math.random() * 0.62),
+        vx: (Math.random() - 0.5) * (0.06 + layer * 0.13),
+        ph: Math.random() * TAU,
+        sw: 0.05 + Math.random() * (0.18 + layer * 0.4),
+        a: layer === 0 ? 0.13 + Math.random() * 0.2
+          : (layer === 1 ? 0.22 + Math.random() * 0.28 : 0.30 + Math.random() * 0.3)
+      });
+    }
+  }
+
+  function drawSnow(now, k, front, mul) {
+    for (var i = 0; i < snow.length; i++) {
+      var f = snow[i];
+      if ((f.layer === 2) !== front) continue;
+      f.y += f.vy * k;
+      f.x += f.vx * k + Math.sin(f.ph + now * 0.0012) * f.sw * k;
+      if (f.y > H + 14) { f.y = -14; f.x = Math.random() * W; }
+      if (f.x < -14) f.x = W + 14;
+      if (f.x > W + 14) f.x = -14;
+      var gr = f.layer === 0 ? f.r * 5.2 : (f.layer === 1 ? f.r * 7.2 : f.r * 8.5);
+      var ga = f.a * mul * (f.layer === 2 ? 0.55 : 1);
+      drawGlow("#dceaff", f.x, f.y, gr, ga);
+    }
+  }
+
+  /* ---------- 点击迸发 ---------- */
+  function burst(x, y, count) {
+    for (var i = 0; i < count; i++) {
+      var a = Math.random() * TAU;
+      var sp = 0.6 + Math.random() * 3.4;
+      sparks.push({
+        x: x, y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 0.5,
+        life: 0.75 + Math.random() * 0.7,
+        decay: 0.014 + Math.random() * 0.026,
+        s: 10 + Math.random() * 20,
+        color: Math.random() < 0.55 ? "#fff0c8" : pickColor()
+      });
+    }
+    if (sparks.length > 620) sparks.splice(0, sparks.length - 620);
+  }
+
+  function drawSparks(k) {
+    for (var i = sparks.length - 1; i >= 0; i--) {
+      var s = sparks[i];
+      s.x += s.vx * k;
+      s.y += s.vy * k;
+      s.vy += 0.055 * k;
+      s.vx *= Math.pow(0.985, k);
+      s.life -= s.decay * k;
+      if (s.life <= 0) { sparks.splice(i, 1); continue; }
+      drawGlow(s.color, s.x, s.y, s.s * (0.4 + s.life), s.life * 0.9);
+    }
+  }
+
+  /* ---------- 开场烟花 ---------- */
+  function launchShell(final) {
+    var color = final ? "#ffd067" : FW_COLORS[(Math.random() * FW_COLORS.length) | 0];
+    // 最后一发从树的位置升空，炸在树尖上方
+    var x = final ? tree.cx : W * (0.16 + Math.random() * 0.68);
+    var ty = final ? tree.top + (tree.bottom - tree.top) * 0.05 : H * (0.10 + Math.random() * 0.30);
+    fwRockets.push({
+      x: x, y: H * 0.99, ty: ty,
+      vy: (ty - H * 0.99) / (final ? 30 : 26),
+      color: color, t: Math.random() * 6, final: !!final
+    });
+  }
+
+  function fwExplode(x, y, color, final) {
+    var n = final ? (perfLo ? 96 : 168) : (perfLo ? 72 : 130), i, a, sp, base;
+    base = final ? 3.2 + Math.random() * 1.2 : 3.0 + Math.random() * 1.1;
+    for (i = 0; i < n; i++) {
+      a = Math.random() * TAU;
+      // 速度拉开档次：近处慢、远处快，球的里侧才不会空成一个环
+      sp = base * (0.12 + 0.9 * Math.pow(Math.random(), 0.55)) * (i % 11 === 0 ? 1.1 : 1);
+      fwParts.push({
+        x: x, y: y, ox: x, oy: y,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.95,
+        life: 1.0 + Math.random() * 0.5,
+        decay: Math.random() < 0.24 ? 0.006 + Math.random() * 0.004 : 0.012 + Math.random() * 0.012,
+        s: (4.5 + Math.random() * 6) * (i % 13 === 0 ? 1.5 : 1),
+        color: final
+          ? (Math.random() < 0.60 ? "#ffd067" : (Math.random() < 0.62 ? "#ff465c" : "#ffa14a"))
+          : (Math.random() < 0.05 ? "#fff6e2" : color),
+        tw: Math.random() * TAU
+      });
+    }
+    if (fwParts.length > 900) fwParts.splice(0, fwParts.length - 900);
+    fwFlash.push({ x: x, y: y, t: 0 });
+    if (final) {
+      // 这一发的火星就地变成树的星尘：起点围着爆点散开，落下来再往里收
+      dustSeedT = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      dustSeedX = x;
+      dustSeedY = y;
+      seedDust(x, y);
+      spawnEmbers(x, y);
+    }
+  }
+
+  /* 最后一发之后落下的暖金余烬：慢慢往下飘，把视线从树尖带到树底 */
+  function spawnEmbers(x, y) {
+    var n = perfLo ? 16 : 26, i, ex;
+    for (i = 0; i < n; i++) {
+      // 只落在树脊附近的一条窄带上，往下走的时候像沿着树身滑落
+      ex = x + (Math.random() - 0.5) * W * 0.08;
+      embers.push({
+        x: ex,
+        y: y - Math.random() * H * 0.05,
+        vx: (x - ex) * 0.05 + (Math.random() - 0.5) * 0.5,
+        vy: 1.5 + Math.random() * 1.1,
+        s: 7 + Math.random() * 7,
+        life: 1,
+        decay: 0.0034 + Math.random() * 0.0018,
+        tw: Math.random() * TAU
+      });
+    }
+  }
+
+  function drawEmbers(now, k) {
+    var i, e, a;
+    for (i = embers.length - 1; i >= 0; i--) {
+      e = embers[i];
+      e.x += e.vx * k + Math.sin(e.tw + now * 0.0011) * 0.6 * k;
+      e.y += e.vy * k;
+      e.vy += 0.004 * k;
+      e.vx *= Math.pow(0.996, k);
+      e.life -= e.decay * k;
+      if (e.life <= 0 || e.y > H + 24) { embers.splice(i, 1); continue; }
+      a = clamp01(e.life * 1.7) * (0.66 + 0.34 * Math.sin(e.tw + now * 0.003));
+      a = a > 1 ? 1 : a;
+      // 只留一截很短的余光，别拖成彗星
+      ctx.strokeStyle = rgba("#ffd067", a * 0.28);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(e.x - e.vx * 1.4, e.y - e.vy * 2.0);
+      ctx.lineTo(e.x, e.y);
+      ctx.stroke();
+      drawGlow("#ffd067", e.x, e.y, e.s * 1.5, a * 0.45);
+      drawGlow("#ffe9b4", e.x, e.y, e.s * 0.5, a * 0.9);
+    }
+  }
+
+  /* 把树的星尘起点摆到爆点周围，之后它们才一层层飞向自己的位置 */
+  function seedDust(bx, by) {
+    var i, a, rr, px, py;
+    for (i = 0; i < tree.points.length; i++) {
+      a = Math.random() * TAU;
+      rr = Math.sqrt(Math.random());
+      px = bx + Math.cos(a) * rr * W * 0.36;
+      py = by + Math.sin(a) * rr * H * 0.16 + (0.16 + Math.random() * 0.6) * H * 0.24;
+      if (px < -20) px = -20; else if (px > W + 20) px = W + 20;
+      if (py < -20) py = -20; else if (py > H + 20) py = H + 20;
+      var p = tree.points[i];
+      p.sx0 = px; p.sy0 = py;
+      p.ox = px; p.oy = py;
+      p.px = px; p.py = py;
+    }
+  }
+
+  function drawFireworks(now, k) {
+    var i, f, r, g, fa, rk, tx, p, a, dx, dy;
+
+    // 炸开的瞬间照亮一片天
+    for (i = fwFlash.length - 1; i >= 0; i--) {
+      f = fwFlash[i];
+      f.t += 0.06 * k;
+      if (f.t >= 1) { fwFlash.splice(i, 1); continue; }
+      r = H * (0.035 + 0.10 * f.t);
+      fa = Math.pow(1 - f.t, 2.6) * 0.5;
+      g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+      g.addColorStop(0, "rgba(255,246,224," + fa + ")");
+      g.addColorStop(0.45, "rgba(255,214,150," + (fa * 0.5) + ")");
+      g.addColorStop(1, "rgba(255,190,120,0)");
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = g;
+      ctx.fillRect(f.x - r, f.y - r, r * 2, r * 2);
+    }
+
+    // 升空弹体：一条渐小的尾巴
+    for (i = fwRockets.length - 1; i >= 0; i--) {
+      rk = fwRockets[i];
+      rk.y += rk.vy * k;
+      rk.t += 0.016 * k;
+      tx = rk.x + Math.sin(rk.t * 6) * W * 0.004;
+      drawGlow(rk.color, tx, rk.y, 13, 0.85);
+      drawGlow(rk.color, tx, rk.y + 10, 9, 0.40);
+      drawGlow(rk.color, tx, rk.y + 22, 7, 0.18);
+      if (rk.y <= rk.ty) {
+        fwExplode(tx, rk.y, rk.color, rk.final);
+        fwRockets.splice(i, 1);
+      }
+    }
+
+    // 火星：下坠 + 阻力 + 残光
+    for (i = fwParts.length - 1; i >= 0; i--) {
+      p = fwParts[i];
+      p.x += p.vx * k;
+      p.y += p.vy * k;
+      p.vy += 0.05 * k;
+      p.vx *= Math.pow(0.965, k);
+      p.vy *= Math.pow(0.975, k);
+      p.life -= p.decay * k;
+      if (p.life <= 0) { fwParts.splice(i, 1); continue; }
+      a = 0.35 + 0.65 * p.life;
+      a *= 0.86 + 0.14 * Math.sin(p.tw + now * 0.02);
+
+      // 短彗尾：只拖身后一小段，才是火星在飞，不是射线
+      ctx.strokeStyle = rgba(p.color, a * 0.34);
+      ctx.lineWidth = Math.max(1, p.s * 0.065);
+      ctx.beginPath();
+      ctx.moveTo(p.x - p.vx * 2.4, p.y - p.vy * 2.4);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+
+      // 外晕收一圈，别再糊成绒球
+      drawGlow(p.color, p.x, p.y, p.s * (0.85 + p.life * 0.5), a * 0.5);
+
+      // 硬芯：一颗实在的亮点，边界清楚
+      ctx.fillStyle = rgba(p.color, Math.min(1, a * 1.1));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(1.1, p.s * 0.22), 0, TAU);
+      ctx.fill();
+
+      ctx.globalAlpha = Math.min(1, a * 0.9);
+      ctx.fillStyle = "#fff8e8";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(0.5, p.s * 0.045), 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  /* ---------- 背景音乐：现场合成的音盒版《Jingle Bells》+ 和弦铺底 ---------- */
+  var mBtn = document.getElementById("mBtn");
+  var actx = null, master = null, musicOn = false, musicMuted = false, musicTimer = null;
+  var BEAT = 0.52, melIdx = 0, melT = 0, chordIdx = 0, chordT = 0;
+
+  var NOTE = { E4: 329.63, G4: 392.00, C5: 523.25, D4: 293.66 };
+  var CH_C = [130.81, 164.81, 196.00];      // C3 E3 G3
+  var CH_G = [98.00, 123.47, 146.83];       // G2 B2 D3
+
+  // 副歌旋律（公有领域曲目），一拍为 1；每两句 4 拍一小节，和和弦对齐
+  var MELODY = [
+    ["E4", 1], ["E4", 1], ["E4", 2],
+    ["E4", 1], ["E4", 1], ["E4", 2],
+    ["E4", 1], ["G4", 1], ["C5", 2],
+    ["D4", 1], ["D4", 1], ["D4", 2],
+    ["D4", 1], ["E4", 1], ["D4", 1], ["G4", 1],
+    ["E4", 1], ["E4", 1], ["E4", 2],
+    ["E4", 1], ["E4", 1], ["E4", 2],
+    ["E4", 1], ["G4", 1], ["C5", 2],
+    ["D4", 1], ["D4", 1], ["D4", 2],
+    ["D4", 1], ["E4", 1], ["D4", 1], ["C5", 1],
+    ["-", 4]
+  ];
+  var CHORDS = [CH_C, CH_C, CH_C, CH_G, CH_G, CH_C, CH_C, CH_C, CH_G, CH_C, CH_C];
+
+  function bell(freq, when, gain) {
+    var o = actx.createOscillator(), g = actx.createGain();
+    o.type = "sine";
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.linearRampToValueAtTime(gain, when + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0006, when + 1.15);
+    o.connect(g);
+    g.connect(master);
+    o.start(when);
+    o.stop(when + 1.25);
+
+    // 一点泛音，才有金属铃铛的亮
+    var o2 = actx.createOscillator(), g2 = actx.createGain();
+    o2.type = "sine";
+    o2.frequency.value = freq * 2.02;
+    g2.gain.setValueAtTime(0.0001, when);
+    g2.gain.linearRampToValueAtTime(gain * 0.3, when + 0.01);
+    g2.gain.exponentialRampToValueAtTime(0.0004, when + 0.55);
+    o2.connect(g2);
+    g2.connect(master);
+    o2.start(when);
+    o2.stop(when + 0.65);
+  }
+
+  function padChord(freqs, when, dur) {
+    var i, o, g;
+    for (i = 0; i < freqs.length; i++) {
+      o = actx.createOscillator();
+      g = actx.createGain();
+      o.type = "triangle";
+      o.frequency.value = freqs[i];
+      g.gain.setValueAtTime(0.0001, when);
+      g.gain.linearRampToValueAtTime(0.042, when + dur * 0.35);
+      g.gain.linearRampToValueAtTime(0.0001, when + dur);
+      o.connect(g);
+      g.connect(master);
+      o.start(when);
+      o.stop(when + dur + 0.05);
+    }
+  }
+
+  function scheduleMusic() {
+    if (!actx || !musicOn) return;
+    var horizon = actx.currentTime + 0.9, n, f, dur;
+
+    // 和弦每 4 拍换一次，跟旋律的小节对齐
+    while (chordT < horizon) {
+      padChord(CHORDS[chordIdx % CHORDS.length], chordT, BEAT * 4);
+      chordT += BEAT * 4;
+      chordIdx++;
+    }
+
+    // 旋律：按拍值一个个排下去，长音铃铛拖得久一点
+    while (melT < horizon) {
+      n = MELODY[melIdx % MELODY.length];
+      dur = n[1] * BEAT;
+      f = NOTE[n[0]];
+      if (f) bell(f, melT, n[1] >= 2 ? 0.5 : 0.4);   // "-" 是休止，留白再起
+      melT += dur;
+      melIdx = (melIdx + 1) % MELODY.length;
+    }
+  }
+
+  function startMusic() {
+    if (musicMuted || musicOn) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) {
+      actx = new AC();
+      master = actx.createGain();
+      master.gain.value = 0;
+      master.connect(actx.destination);
+    }
+    // 从头开始放，或从暂停处接着放
+    if (!melT || melT < actx.currentTime) {
+      melIdx = 0;
+      chordIdx = 0;
+      melT = actx.currentTime + 0.1;
+      chordT = melT;
+    }
+    if (actx.state === "suspended" && actx.resume) actx.resume();
+    musicOn = true;
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setTargetAtTime(0.15, actx.currentTime, 0.8);
+    mBtn.classList.remove("off");
+    mBtn.classList.add("on");
+    if (!musicTimer) musicTimer = setInterval(scheduleMusic, 120);
+    scheduleMusic();
+  }
+
+  function stopMusic() {
+    musicOn = false;
+    musicMuted = true;
+    if (actx && master) {
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setTargetAtTime(0, actx.currentTime, 0.4);
+    }
+    mBtn.classList.remove("on");
+    mBtn.classList.add("off");
+  }
+
+  mBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (musicOn) stopMusic();
+    else { musicMuted = false; startMusic(); }
+  });
+
+  /* ---------- 主循环 ---------- */
+  function frame(now) {
+    var dt = lastT ? Math.min(48, now - lastT) : 16;
+    lastT = now;
+    var k = dt / 16.667;
+
+    if (!introStart) introStart = now + FW_MS;
+    var intro = clamp01((now - introStart) / INTRO);
+
+    // 烟花排期：按固定时刻依次升空
+    if (!fwStart) { fwStart = now; fwPlanIdx = 0; }
+    var fwEl = now - fwStart;
+    while (fwPlanIdx < FW_PLAN.length && fwEl >= FW_PLAN[fwPlanIdx]) {
+      launchShell(fwPlanIdx === FW_PLAN.length - 1);
+      fwPlanIdx++;
+    }
+    // 星尘不是凭空浮出来的，是最后一发火星里长出来的
+    dustK = dustSeedT ? clamp01((now - dustSeedT) / 900) : 0;
+    if (!introDone && intro >= 1) {
+      introDone = true;
+      if (boost < 0.2) boost = 0.2;
+    }
+    var snowMul = Math.max(clamp01((intro - 0.35) / 0.65), Math.min(0.7, clamp01(fwEl / 1100) * 0.7));
+    var elapsed = now - introStart;
+    // 收尾呼吸：整树先亮一档再回落，随后星星亮、标题浮入
+    var breath = introDone ? Math.sin(Math.min(1, (elapsed - INTRO) / 620) * Math.PI) : 0;
+    glowK = 1 + 0.12 * breath;
+    var starA = clamp01((elapsed - INTRO - 150) / 400);
+
+    rot += 0.0034 * k * (1 + boost * 0.9);
+    boost *= Math.pow(0.935, k);
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.drawImage(bgCanvas, 0, 0, W, H);
+
+    drawFog(intro);
+    drawGround(intro);
+    drawBody(intro);
+    drawGarlands(now, intro);
+
+    ctx.globalCompositeOperation = "lighter";
+    drawSnow(now, k, false, snowMul);
+    drawTree(now, k, intro);
+    drawStar(now, starA);
+    drawFireworks(now, k);
+    drawEmbers(now, k);
+    drawSnow(now, k, true, snowMul);
+    drawSparks(k);
+
+    drawBloom();
+
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- 初始化 ---------- */
+  function layout() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    perfLo = Math.min(W, H) < 700 || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+    DPR = Math.min(perfLo ? 1.5 : 2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    buildBg();
+    buildBloom();
+    buildTree();
+    if (dustSeedT) seedDust(dustSeedX, dustSeedY);
+    buildSnow();
+  }
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(layout, 220);
+  });
+  window.addEventListener("orientationchange", function () {
+    setTimeout(layout, 260);
+  });
+
+  window.addEventListener("pointerdown", function (e) {
+    if (!musicMuted && !musicOn) startMusic();     // 浏览器要求先有一次点击才允许出声
+    boost = 1;
+    burst(e.clientX, e.clientY, perfLo ? 26 : 44);
+    if (subEl && !subEl.classList.contains("dim")) subEl.classList.add("dim");
+  });
+
+  /* ---------- 重播汇聚 ---------- */
+  function replay() {
+    introStart = 0;
+    introDone = false;
+    boost = 0;
+    fwStart = 0;
+    fwPlanIdx = 0;
+    fwRockets = [];
+    fwParts = [];
+    fwFlash = [];
+    embers = [];
+    dustSeedT = 0;
+    for (var i = 0; i < tree.points.length; i++) {
+      tree.points[i].sx0 = tree.points[i].ox;
+      tree.points[i].sy0 = tree.points[i].oy;
+      tree.points[i].px = tree.points[i].ox;
+      tree.points[i].py = tree.points[i].oy;
+      tree.points[i].landT = 0;
+    }
+    var ov = document.querySelector(".overlay");
+    if (ov) {
+      ov.style.animation = "none";
+      void ov.offsetWidth;
+      ov.style.animation = "";
+    }
+    if (subEl) subEl.classList.remove("dim");
+  }
+
+  window.addEventListener("keydown", function (ev) {
+    if (ev.key === "r" || ev.key === "R") replay();
+  });
+  canvas.addEventListener("dblclick", replay);
+
+  layout();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
